@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>双人语音对讲</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
+body{padding:30px 20px;background:#f5f5f7;color:#222;max-width:600px;margin:0 auto}
+.box{background:#fff;padding:24px;border-radius:16px;box-shadow:0 2px 12px #00000010}
+h2{margin-bottom:16px}
+.info{color:#666;font-size:14px;margin-bottom:20px;line-height:1.5}
+.row{display:flex;gap:8px;margin-bottom:12px}
+input{flex:1;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:16px}
+button{padding:12px;border:none;border-radius:8px;font-size:16px;background:#007aff;color:#fff}
+button:disabled{background:#999}
+#status{margin-top:16px;padding:12px;background:#f0f0f0;border-radius:8px;font-size:14px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>语音对讲</h2>
+  <div class="info">
+    两个人输入【一模一样的房间号】<br>
+    优先同WiFi测试；手机流量互通看运营商<br>
+    仅语音，无录制、无存储；锁屏会断
+  </div>
+  <div class="row">
+    <input id="roomInput" placeholder="输入房间号，比如 123456">
+    <button id="copyBtn">复制房间号</button>
+  </div>
+  <button id="connectBtn" style="width:100%;margin-bottom:10px">连接</button>
+  <button id="disconnectBtn" disabled style="width:100%;background:#ff3b30">断开</button>
+  <div id="status">等待输入房间号</div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $ = s=>document.querySelector(s);
+const roomInput = $('#roomInput');
+const connectBtn = $('#connectBtn');
+const disconnectBtn = $('#disconnectBtn');
+const copyBtn = $('#copyBtn');
+const statusBox = $('#status');
+
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+  ]
+};
+
+let peer;
+let localStream;
+let call;
+let connected = false;
+
+function setStatus(text){
+  statusBox.innerText = text;
+}
+
+// 复制房间号
+copyBtn.onclick = async ()=>{
+  try{
+    await navigator.clipboard.writeText(roomInput.value);
+    setStatus("✅房间号已复制");
+  }catch(e){
+    roomInput.select();
+    roomInput.setSelectionRange(0,99999);
+    setStatus("⚠️自动复制失败，长按拷贝");
+  }
+};
+
+// 断开
+disconnectBtn.onclick = ()=>{
+  if(call) call.close();
+  if(localStream) localStream.getTracks().forEach(t=>t.stop());
+  if(peer) peer.destroy();
+  connected = false;
+  call = null;
+  peer = null;
+  localStream = null;
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  setStatus("✅已断开连接");
+};
+
+connectBtn.onclick = async ()=>{
+  const rid = roomInput.value.trim();
+  if(!rid){
+    setStatus("❌请输入房间号");
+    return;
+  }
+  connectBtn.disabled = true;
+  setStatus("请求麦克风权限...");
+  try{
+    localStream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+  }catch(err){
+    setStatus("❌麦克风权限被拒绝");
+    connectBtn.disabled = false;
+    return;
+  }
+
+  // 初始化peer，公共免费信令服务器
+  peer = new Peer(rid,{
+    config:ICE_CONFIG,
+    debug:2
+  });
+
+  // 别人呼叫我
+  peer.on('call', incomingCall=>{
+    setStatus("📞收到呼叫，接听中...");
+    call = incomingCall;
+    call.answer(localStream);
+    call.on('stream', remoteStream=>{
+      const audio = new Audio();
+      audio.srcObject = remoteStream;
+      audio.autoplay = true;
+      connected = true;
+      setStatus("✅✅连接成功，可以说话！");
+    });
+    call.on('close',()=>{
+      setStatus("对方挂断");
+      disconnectBtn.click();
+    });
+    call.on('error',e=>setStatus("通话错误："+e.message));
+  });
+
+  // 打开成功之后，主动呼叫对方
+  peer.on('open',()=>{
+    setStatus("✅本地节点就绪，等待对方上线，或者呼叫对方");
+    // 延迟一点，呼叫同ID
+    setTimeout(()=>{
+      const newCall = peer.call(rid, localStream);
+      if(newCall){
+        call = newCall;
+        call.on('stream', remoteStream=>{
+          const audio = new Audio();
+          audio.srcObject = remoteStream;
+          audio.autoplay = true;
+          connected = true;
+          setStatus("✅✅连接成功，可以说话！");
+        });
+        call.on('close',()=>{
+          setStatus("对方挂断");
+          disconnectBtn.click();
+        });
+        call.on('error',e=>{
+          // 对方还没上线是正常的，等待对方来呼叫
+          setStatus("⏳对方还未加入，等对方点连接");
+        });
+      }
+    },800);
+  });
+
+  peer.on('error',err=>{
+    setStatus("❌Peer错误："+err.type);
+    connectBtn.disabled = false;
+  });
+  disconnectBtn.disabled = false;
+};
+</script>
+</body>
+</html>
