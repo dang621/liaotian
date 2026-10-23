@@ -32,8 +32,8 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
   
   <div class="info">
     1. 两人输入<b>一模一样</b>的房间号<br>
-    2. 点连接，允许麦克风权限<br>
-    3. 先开的人等待，后开的人自动接通<br>
+    2. A先点【连接】，等待提示【已就绪】<br>
+    3. B再点【连接】，B会主动呼叫A<br>
     4. 锁屏、切后台会自动断开
   </div>
 
@@ -57,7 +57,6 @@ const disconnectBtn = $('#disconnectBtn');
 const copyBtn = $('#copyBtn');
 const statusBox = $('#status');
 
-// 修复webrtc错误：多STUN + 免费TURN中继
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -78,13 +77,13 @@ const ICE_CONFIG = {
 };
 
 let peer, localStream, call, isConnected = false;
+let tryCallTimer = null;
 
 function setStatus(text, type = '') {
   statusBox.innerText = text;
   statusBox.className = type;
 }
 
-// 一键复制（iOS Safari兼容）
 copyBtn.onclick = async () => {
   if (!roomInput.value.trim()) {
     setStatus('❌ 请先输入房间号', 'error');
@@ -100,8 +99,8 @@ copyBtn.onclick = async () => {
   }
 };
 
-// 断开连接
 disconnectBtn.onclick = () => {
+  clearTimeout(tryCallTimer);
   if (call) { call.close(); call = null; }
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
@@ -126,7 +125,6 @@ connectBtn.onclick = async () => {
   roomInput.disabled = true;
   setStatus('🎤 正在请求麦克风权限...', 'waiting');
 
-  // 获取麦克风
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ 
       audio: { echoCancellation: true, noiseSuppression: true },
@@ -141,17 +139,12 @@ connectBtn.onclick = async () => {
 
   setStatus('🔗 正在连接信号服务器...', 'waiting');
 
-  const myId = roomId + '-' + Math.random().toString(36).substring(2, 8);
-  
-  try {
-    peer = new Peer(myId, { config: ICE_CONFIG, debug: 1 });
-  } catch(err) {
-    setStatus('❌ Peer初始化失败：' + err.message, 'error');
-    return;
-  }
+  // 重点：直接用房间号当peerId，不再自动加随机后缀
+  peer = new Peer(roomId, { config: ICE_CONFIG, debug: 0 });
 
-  // 接收来电
+  // 收到来电，接听
   peer.on('call', incomingCall => {
+    clearTimeout(tryCallTimer);
     setStatus('📞 收到来电，接听中...', 'waiting');
     call = incomingCall;
     call.answer(localStream);
@@ -174,13 +167,50 @@ connectBtn.onclick = async () => {
   });
 
   peer.on('open', () => {
-    setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
+    setStatus('⏳ 已就绪，等待对方加入，3秒后尝试呼叫...', 'waiting');
+    // 打开成功后，延迟3秒尝试呼叫同一个ID（房间号）
+    tryCallTimer = setTimeout(()=>{
+      setStatus('📞 尝试呼叫对方...','waiting');
+      call = peer.call(roomId, localStream);
+
+      call.on('stream', remoteStream => {
+        playRemoteAudio(remoteStream);
+        isConnected = true;
+        setStatus('✅✅ 连接成功，可以说话！', 'connected');
+        disconnectBtn.disabled = false;
+      });
+      call.on('close', ()=>{
+        setStatus('📵 对方挂断','waiting');
+        disconnectBtn.click();
+      });
+      call.on('error',(err)=>{
+        // 呼叫失败 = 对方还没上线，继续等待
+        setStatus('⏳ 对方暂未上线，继续等待...','waiting');
+        call = null;
+      })
+    },3000);
   });
 
   peer.on('error', err => {
     console.error('Peer error:', err);
     if (err.type === 'unavailable-id') {
-      setStatus('❌ 房间号已被占用，请换一个数字', 'error');
+      // 这个ID已经存在！说明：另一台设备已经先开了这个房间号，当前设备是后进来的，直接呼叫对方
+      setStatus('📞 房间已存在，发起呼叫...','waiting');
+      call = peer.call(roomId, localStream);
+      call.on('stream', remoteStream => {
+        playRemoteAudio(remoteStream);
+        isConnected = true;
+        setStatus('✅✅ 连接成功，可以说话！', 'connected');
+        disconnectBtn.disabled = false;
+      });
+      call.on('close', ()=>{
+        setStatus('📵 对方挂断','waiting');
+        disconnectBtn.click();
+      });
+      call.on('error',e=>{
+        setStatus('❌ 呼叫失败：'+e.type,'error');
+        disconnectBtn.click();
+      })
     } else if (err.type === 'webrtc') {
       setStatus('❌ 网络连接失败，请尝试切换WiFi或重试', 'error');
     } else if (err.type === 'network' || err.type === 'server-unavailable') {
@@ -191,13 +221,11 @@ connectBtn.onclick = async () => {
     connectBtn.disabled = false;
     roomInput.disabled = false;
     disconnectBtn.disabled = true;
-    if (peer) peer.destroy();
   });
 
   disconnectBtn.disabled = false;
 };
 
-// 播放远端音频
 function playRemoteAudio(stream) {
   const audio = new Audio();
   audio.srcObject = stream;
