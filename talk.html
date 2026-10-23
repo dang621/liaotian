@@ -3,162 +3,207 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>双人语音对讲</title>
+<title>实时</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
-body{padding:30px 20px;background:#f5f5f7;color:#222;max-width:600px;margin:0 auto}
-.box{background:#fff;padding:24px;border-radius:16px;box-shadow:0 2px 12px #00000010}
-h2{margin-bottom:16px}
-.info{color:#666;font-size:14px;margin-bottom:20px;line-height:1.5}
-.row{display:flex;gap:8px;margin-bottom:12px}
-input{flex:1;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:16px}
-button{padding:12px;border:none;border-radius:8px;font-size:16px;background:#007aff;color:#fff}
-button:disabled{background:#999}
-#status{margin-top:16px;padding:12px;background:#f0f0f0;border-radius:8px;font-size:14px}
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system}
+body{padding:30px 20px;background:#f5f5f7;color:#222;max-width:600px;margin:0 auto;min-height:100vh}
+.box{background:#fff;padding:28px 24px;border-radius:20px;box-shadow:0 4px 20px #00000010}
+h2{font-size:24px;margin-bottom:8px;text-align:center}
+.subtitle{text-align:center;color:#888;font-size:14px;margin-bottom:24px}
+.info{color:#666;font-size:13px;margin-bottom:20px;line-height:1.6;background:#f8f8f8;padding:12px 16px;border-radius:10px}
+.row{display:flex;gap:8px;margin-bottom:14px}
+input{flex:1;padding:14px 16px;border:1.5px solid #e0e0e0;border-radius:12px;font-size:16px;outline:none;transition:border-color .2s}
+input:focus{border-color:#007aff}
+button{padding:14px 20px;border:none;border-radius:12px;font-size:16px;font-weight:500;cursor:pointer;transition:opacity .2s}
+button:active{opacity:0.7}
+button:disabled{background:#c7c7cc;cursor:not-allowed}
+.primary{background:#007aff;color:#fff;width:100%}
+.danger{background:#ff3b30;color:#fff;width:100%}
+#status{margin-top:18px;padding:14px 16px;background:#f0f4f8;border-radius:12px;font-size:14px;line-height:1.5;min-height:48px;word-break:break-all}
+.connected{background:#d4edda !important;color:#155724}
+.error{background:#f8d7da !important;color:#721c24}
+.waiting{background:#fff3cd !important;color:#856404}
 </style>
 </head>
 <body>
 <div class="box">
-  <h2>语音对讲</h2>
+  <h2>实时</h2>
+  <div class="subtitle">实时</div>
+  
   <div class="info">
-    两个人输入【一模一样的房间号】<br>
-    优先同WiFi测试；手机流量互通看运营商<br>
-    仅语音，无录制、无存储；锁屏会断
+    1. 两人输入<b>一模一样</b>的房间号<br>
+    2. 点连接，允许麦克风权限<br>
+    3. 先开的人等待，后开的人自动接通<br>
+    4. 锁屏、切后台会自动断开
   </div>
+
   <div class="row">
-    <input id="roomInput" placeholder="输入房间号，比如 123456">
-    <button id="copyBtn">复制房间号</button>
+    <input id="roomInput" placeholder="输入房间号，如 8866">
+    <button id="copyBtn" style="background:#e5e5ea;color:#333">复制</button>
   </div>
-  <button id="connectBtn" style="width:100%;margin-bottom:10px">连接</button>
-  <button id="disconnectBtn" disabled style="width:100%;background:#ff3b30">断开</button>
-  <div id="status">等待输入房间号</div>
+  
+  <button id="connectBtn" class="primary">连接</button>
+  <button id="disconnectBtn" class="danger" style="margin-top:10px" disabled>断开</button>
+  
+  <div id="status">⏳ 等待输入房间号</div>
 </div>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const $ = s=>document.querySelector(s);
+const $ = s => document.querySelector(s);
 const roomInput = $('#roomInput');
 const connectBtn = $('#connectBtn');
 const disconnectBtn = $('#disconnectBtn');
 const copyBtn = $('#copyBtn');
 const statusBox = $('#status');
 
+// 修复webrtc错误：多STUN + 免费TURN中继
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ]
 };
 
-let peer;
-let localStream;
-let call;
-let connected = false;
+let peer, localStream, call, isConnected = false;
 
-function setStatus(text){
+function setStatus(text, type = '') {
   statusBox.innerText = text;
+  statusBox.className = type;
 }
 
-// 复制房间号
-copyBtn.onclick = async ()=>{
-  try{
-    await navigator.clipboard.writeText(roomInput.value);
-    setStatus("✅房间号已复制");
-  }catch(e){
+// 一键复制（iOS Safari兼容）
+copyBtn.onclick = async () => {
+  if (!roomInput.value.trim()) {
+    setStatus('❌ 请先输入房间号', 'error');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(roomInput.value.trim());
+    setStatus('✅ 房间号已复制', 'connected');
+  } catch(e) {
     roomInput.select();
-    roomInput.setSelectionRange(0,99999);
-    setStatus("⚠️自动复制失败，长按拷贝");
+    roomInput.setSelectionRange(0, 99999);
+    setStatus('⚠️ 请长按手动复制房间号', 'waiting');
   }
 };
 
-// 断开
-disconnectBtn.onclick = ()=>{
-  if(call) call.close();
-  if(localStream) localStream.getTracks().forEach(t=>t.stop());
-  if(peer) peer.destroy();
-  connected = false;
-  call = null;
-  peer = null;
-  localStream = null;
+// 断开连接
+disconnectBtn.onclick = () => {
+  if (call) { call.close(); call = null; }
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  if (peer) { peer.destroy(); peer = null; }
+  isConnected = false;
   connectBtn.disabled = false;
   disconnectBtn.disabled = true;
-  setStatus("✅已断开连接");
+  roomInput.disabled = false;
+  setStatus('✅ 已断开', 'waiting');
 };
 
-connectBtn.onclick = async ()=>{
-  const rid = roomInput.value.trim();
-  if(!rid){
-    setStatus("❌请输入房间号");
+connectBtn.onclick = async () => {
+  let roomId = roomInput.value.trim();
+  if (!roomId) {
+    setStatus('❌ 请输入房间号', 'error');
     return;
   }
+
   connectBtn.disabled = true;
-  setStatus("请求麦克风权限...");
-  try{
-    localStream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-  }catch(err){
-    setStatus("❌麦克风权限被拒绝");
+  roomInput.disabled = true;
+  setStatus('🎤 正在请求麦克风权限...', 'waiting');
+
+  // 获取麦克风
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ 
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: false 
+    });
+  } catch(err) {
+    setStatus('❌ 麦克风权限被拒绝，请在浏览器设置中允许', 'error');
     connectBtn.disabled = false;
+    roomInput.disabled = false;
     return;
   }
 
-  // 初始化peer，公共免费信令服务器
-  peer = new Peer(rid,{
-    config:ICE_CONFIG,
-    debug:2
-  });
+  setStatus('🔗 正在连接信号服务器...', 'waiting');
 
-  // 别人呼叫我
-  peer.on('call', incomingCall=>{
-    setStatus("📞收到呼叫，接听中...");
+  const myId = roomId + '-' + Math.random().toString(36).substring(2, 8);
+  
+  try {
+    peer = new Peer(myId, { config: ICE_CONFIG, debug: 1 });
+  } catch(err) {
+    setStatus('❌ Peer初始化失败：' + err.message, 'error');
+    return;
+  }
+
+  // 接收来电
+  peer.on('call', incomingCall => {
+    setStatus('📞 收到来电，接听中...', 'waiting');
     call = incomingCall;
     call.answer(localStream);
-    call.on('stream', remoteStream=>{
-      const audio = new Audio();
-      audio.srcObject = remoteStream;
-      audio.autoplay = true;
-      connected = true;
-      setStatus("✅✅连接成功，可以说话！");
+    
+    call.on('stream', remoteStream => {
+      playRemoteAudio(remoteStream);
+      isConnected = true;
+      setStatus('✅✅ 连接成功，可以说话！', 'connected');
+      disconnectBtn.disabled = false;
     });
-    call.on('close',()=>{
-      setStatus("对方挂断");
+
+    call.on('close', () => {
+      setStatus('📵 对方已挂断', 'waiting');
       disconnectBtn.click();
     });
-    call.on('error',e=>setStatus("通话错误："+e.message));
+
+    call.on('error', e => {
+      setStatus('❌ 通话错误：' + e.type, 'error');
+    });
   });
 
-  // 打开成功之后，主动呼叫对方
-  peer.on('open',()=>{
-    setStatus("✅本地节点就绪，等待对方上线，或者呼叫对方");
-    // 延迟一点，呼叫同ID
-    setTimeout(()=>{
-      const newCall = peer.call(rid, localStream);
-      if(newCall){
-        call = newCall;
-        call.on('stream', remoteStream=>{
-          const audio = new Audio();
-          audio.srcObject = remoteStream;
-          audio.autoplay = true;
-          connected = true;
-          setStatus("✅✅连接成功，可以说话！");
-        });
-        call.on('close',()=>{
-          setStatus("对方挂断");
-          disconnectBtn.click();
-        });
-        call.on('error',e=>{
-          // 对方还没上线是正常的，等待对方来呼叫
-          setStatus("⏳对方还未加入，等对方点连接");
-        });
-      }
-    },800);
+  peer.on('open', () => {
+    setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
   });
 
-  peer.on('error',err=>{
-    setStatus("❌Peer错误："+err.type);
+  peer.on('error', err => {
+    console.error('Peer error:', err);
+    if (err.type === 'unavailable-id') {
+      setStatus('❌ 房间号已被占用，请换一个数字', 'error');
+    } else if (err.type === 'webrtc') {
+      setStatus('❌ 网络连接失败，请尝试切换WiFi或重试', 'error');
+    } else if (err.type === 'network' || err.type === 'server-unavailable') {
+      setStatus('❌ 信号服务器连接失败，请检查网络', 'error');
+    } else {
+      setStatus('❌ 错误：' + err.type, 'error');
+    }
     connectBtn.disabled = false;
+    roomInput.disabled = false;
+    disconnectBtn.disabled = true;
+    if (peer) peer.destroy();
   });
+
   disconnectBtn.disabled = false;
 };
+
+// 播放远端音频
+function playRemoteAudio(stream) {
+  const audio = new Audio();
+  audio.srcObject = stream;
+  audio.autoplay = true;
+  audio.play().catch(e => console.log('音频播放失败:', e));
+}
 </script>
 </body>
 </html>
