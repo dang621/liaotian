@@ -32,9 +32,9 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
   
   <div class="info">
     1. 两人输入<b>一模一样</b>的房间号<br>
-    2. A先点【连接】，等待提示【已就绪】<br>
-    3. B再点【连接】，B会主动呼叫A<br>
-    4. 锁屏、切后台会自动断开
+    2. A先点【连接】，安静等待<br>
+    3. B再点【连接】，B自动呼叫A<br>
+    4. 优先同一WiFi测试
   </div>
 
   <div class="row">
@@ -60,24 +60,11 @@ const statusBox = $('#status');
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
+    { urls: 'stun:stun1.l.google.com:19302' }
   ]
 };
 
 let peer, localStream, call, isConnected = false;
-let tryCallTimer = null;
 
 function setStatus(text, type = '') {
   statusBox.innerText = text;
@@ -100,7 +87,6 @@ copyBtn.onclick = async () => {
 };
 
 disconnectBtn.onclick = () => {
-  clearTimeout(tryCallTimer);
   if (call) { call.close(); call = null; }
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
@@ -139,12 +125,10 @@ connectBtn.onclick = async () => {
 
   setStatus('🔗 正在连接信号服务器...', 'waiting');
 
-  // 重点：直接用房间号当peerId，不再自动加随机后缀
   peer = new Peer(roomId, { config: ICE_CONFIG, debug: 0 });
 
-  // 收到来电，接听
+  // 收到来电 = A（先进入的人），接听
   peer.on('call', incomingCall => {
-    clearTimeout(tryCallTimer);
     setStatus('📞 收到来电，接听中...', 'waiting');
     call = incomingCall;
     call.answer(localStream);
@@ -162,65 +146,64 @@ connectBtn.onclick = async () => {
     });
 
     call.on('error', e => {
-      setStatus('❌ 通话错误：' + e.type, 'error');
+      setStatus('❌ 通话协商失败（NAT限制），建议同一WiFi', 'error');
     });
   });
 
+  // Peer打开成功 = 这是A（第一个人），只等待，不主动呼叫自己
   peer.on('open', () => {
-    setStatus('⏳ 已就绪，等待对方加入，3秒后尝试呼叫...', 'waiting');
-    // 打开成功后，延迟3秒尝试呼叫同一个ID（房间号）
-    tryCallTimer = setTimeout(()=>{
-      setStatus('📞 尝试呼叫对方...','waiting');
-      call = peer.call(roomId, localStream);
-
-      call.on('stream', remoteStream => {
-        playRemoteAudio(remoteStream);
-        isConnected = true;
-        setStatus('✅✅ 连接成功，可以说话！', 'connected');
-        disconnectBtn.disabled = false;
-      });
-      call.on('close', ()=>{
-        setStatus('📵 对方挂断','waiting');
-        disconnectBtn.click();
-      });
-      call.on('error',(err)=>{
-        // 呼叫失败 = 对方还没上线，继续等待
-        setStatus('⏳ 对方暂未上线，继续等待...','waiting');
-        call = null;
-      })
-    },3000);
+    setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
   });
 
+  // 错误处理
   peer.on('error', err => {
     console.error('Peer error:', err);
+    
+    // unavailable-id = 房间号已被占用，说明B是后进入的人，B主动呼叫A
     if (err.type === 'unavailable-id') {
-      // 这个ID已经存在！说明：另一台设备已经先开了这个房间号，当前设备是后进来的，直接呼叫对方
-      setStatus('📞 房间已存在，发起呼叫...','waiting');
-      call = peer.call(roomId, localStream);
-      call.on('stream', remoteStream => {
-        playRemoteAudio(remoteStream);
-        isConnected = true;
-        setStatus('✅✅ 连接成功，可以说话！', 'connected');
-        disconnectBtn.disabled = false;
+      setStatus('📞 房间已存在，正在呼叫A...', 'waiting');
+      
+      // B用临时ID注册，然后呼叫A的房间号
+      const tempPeer = new Peer({ config: ICE_CONFIG, debug: 0 });
+      peer = tempPeer;
+      
+      tempPeer.on('open', () => {
+        call = tempPeer.call(roomId, localStream);
+        
+        call.on('stream', remoteStream => {
+          playRemoteAudio(remoteStream);
+          isConnected = true;
+          setStatus('✅✅ 连接成功，可以说话！', 'connected');
+          disconnectBtn.disabled = false;
+        });
+        
+        call.on('close', () => {
+          setStatus('📵 对方挂断', 'waiting');
+          disconnectBtn.click();
+        });
+        
+        call.on('error', e => {
+          setStatus('❌ 呼叫失败：网络NAT不通，建议同一WiFi', 'error');
+        });
       });
-      call.on('close', ()=>{
-        setStatus('📵 对方挂断','waiting');
-        disconnectBtn.click();
+
+      tempPeer.on('error', e => {
+        setStatus('❌ 信号错误：' + e.type, 'error');
       });
-      call.on('error',e=>{
-        setStatus('❌ 呼叫失败：'+e.type,'error');
-        disconnectBtn.click();
-      })
-    } else if (err.type === 'webrtc') {
-      setStatus('❌ 网络连接失败，请尝试切换WiFi或重试', 'error');
+      
     } else if (err.type === 'network' || err.type === 'server-unavailable') {
-      setStatus('❌ 信号服务器连接失败，请检查网络', 'error');
+      setStatus('❌ 信号服务器连不上，请检查网络', 'error');
+      connectBtn.disabled = false;
+      roomInput.disabled = false;
+      disconnectBtn.disabled = true;
+      if (peer) peer.destroy();
     } else {
       setStatus('❌ 错误：' + err.type, 'error');
+      connectBtn.disabled = false;
+      roomInput.disabled = false;
+      disconnectBtn.disabled = true;
+      if (peer) peer.destroy();
     }
-    connectBtn.disabled = false;
-    roomInput.disabled = false;
-    disconnectBtn.disabled = true;
   });
 
   disconnectBtn.disabled = false;
