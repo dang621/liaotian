@@ -6,7 +6,31 @@
 <title>实时</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system}
-body{padding:30px 20px;background:#f5f5f7;color:#222;max-width:600px;margin:0 auto;min-height:100vh}
+body{
+  padding:30px 20px;
+  background: linear-gradient(135deg, #eef2f7 0%, #e4ecf5 100%);
+  color:#222;
+  max-width:600px;
+  margin:0 auto;
+  min-height:100vh;
+  position: relative;
+  overflow-x:hidden;
+}
+/* Dang 黑色加深30%，玻璃质感，下移20% */
+.bg-logo{
+  position:absolute;
+  left:50%;
+  top:calc(50% + 20%);
+  transform:translate(-50%,-50%);
+  font-size:120px;
+  font-weight:700;
+  color:rgba(0, 0, 0, 0.30);
+  backdrop-filter:blur(3px);
+  -webkit-backdrop-filter:blur(3px);
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.12);
+  pointer-events:none;
+  user-select:none;
+}
 .box{background:#fff;padding:28px 24px;border-radius:20px;box-shadow:0 4px 20px #00000010}
 h2{font-size:24px;margin-bottom:8px;text-align:center}
 .subtitle{text-align:center;color:#888;font-size:14px;margin-bottom:24px}
@@ -26,6 +50,7 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
 </style>
 </head>
 <body>
+<div class="bg-logo">Dang</div>
 <div class="box">
   <h2>实时</h2>
   <div class="subtitle">实时</div>
@@ -36,7 +61,6 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
     3. 此程序为私人制作，请勿转载使用，党伟制作！！！
     4. 如果被作者发现有人盗取，定追究法律责任！！！
   </div>
-
   <div class="row">
     <input id="roomInput" placeholder="输入房间号，如 8866">
     <button id="copyBtn" style="background:#e5e5ea;color:#333">复制</button>
@@ -47,7 +71,6 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
   
   <div id="status">⏳ 等待输入房间号</div>
 </div>
-
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const $ = s => document.querySelector(s);
@@ -56,21 +79,17 @@ const connectBtn = $('#connectBtn');
 const disconnectBtn = $('#disconnectBtn');
 const copyBtn = $('#copyBtn');
 const statusBox = $('#status');
-
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun1.l.google.com:19302' }
   ]
 };
-
 let peer, localStream, call, isConnected = false;
-
 function setStatus(text, type = '') {
   statusBox.innerText = text;
   statusBox.className = type;
 }
-
 copyBtn.onclick = async () => {
   if (!roomInput.value.trim()) {
     setStatus('❌ 请先输入房间号', 'error');
@@ -85,7 +104,6 @@ copyBtn.onclick = async () => {
     setStatus('⚠️ 请长按手动复制房间号', 'waiting');
   }
 };
-
 disconnectBtn.onclick = () => {
   if (call) { call.close(); call = null; }
   if (localStream) {
@@ -99,18 +117,15 @@ disconnectBtn.onclick = () => {
   roomInput.disabled = false;
   setStatus('✅ 已断开', 'waiting');
 };
-
 connectBtn.onclick = async () => {
   let roomId = roomInput.value.trim();
   if (!roomId) {
     setStatus('❌ 请输入房间号', 'error');
     return;
   }
-
   connectBtn.disabled = true;
   roomInput.disabled = true;
   setStatus('🎤 正在请求麦克风权限...', 'waiting');
-
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ 
       audio: { echoCancellation: true, noiseSuppression: true },
@@ -122,11 +137,8 @@ connectBtn.onclick = async () => {
     roomInput.disabled = false;
     return;
   }
-
   setStatus('🔗 正在连接信号服务器...', 'waiting');
-
   peer = new Peer(roomId, { config: ICE_CONFIG, debug: 0 });
-
   // 收到来电 = A（先进入的人），接听
   peer.on('call', incomingCall => {
     setStatus('📞 收到来电，接听中...', 'waiting');
@@ -139,22 +151,18 @@ connectBtn.onclick = async () => {
       setStatus('✅✅ 连接成功，可以说话！', 'connected');
       disconnectBtn.disabled = false;
     });
-
     call.on('close', () => {
       setStatus('📵 对方已挂断', 'waiting');
       disconnectBtn.click();
     });
-
     call.on('error', e => {
       setStatus('❌ 通话协商失败（NAT限制），建议同一WiFi', 'error');
     });
   });
-
   // Peer打开成功 = 这是A（第一个人），只等待，不主动呼叫自己
   peer.on('open', () => {
     setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
   });
-
   // 错误处理
   peer.on('error', err => {
     console.error('Peer error:', err);
@@ -186,7 +194,6 @@ connectBtn.onclick = async () => {
           setStatus('❌ 呼叫失败：网络NAT不通，建议同一WiFi', 'error');
         });
       });
-
       tempPeer.on('error', e => {
         setStatus('❌ 信号错误：' + e.type, 'error');
       });
@@ -205,10 +212,8 @@ connectBtn.onclick = async () => {
       if (peer) peer.destroy();
     }
   });
-
   disconnectBtn.disabled = false;
 };
-
 function playRemoteAudio(stream) {
   const audio = new Audio();
   audio.srcObject = stream;
