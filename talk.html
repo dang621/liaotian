@@ -79,13 +79,18 @@ const connectBtn = $('#connectBtn');
 const disconnectBtn = $('#disconnectBtn');
 const copyBtn = $('#copyBtn');
 const statusBox = $('#status');
+// 增加更多STUN服务器，提高穿透成功率
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.voipbuster.com' }
   ]
 };
 let peer, localStream, call, isConnected = false;
+let callTimeout = null;
+
 function setStatus(text, type = '') {
   statusBox.innerText = text;
   statusBox.className = type;
@@ -105,6 +110,7 @@ copyBtn.onclick = async () => {
   }
 };
 disconnectBtn.onclick = () => {
+  clearTimeout(callTimeout);
   if (call) { call.close(); call = null; }
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
@@ -139,8 +145,9 @@ connectBtn.onclick = async () => {
   }
   setStatus('🔗 正在连接信号服务器...', 'waiting');
   peer = new Peer(roomId, { config: ICE_CONFIG, debug: 0 });
-  // 收到来电 = A（先进入的人），接听
+  // A：收到来电接听
   peer.on('call', incomingCall => {
+    clearTimeout(callTimeout);
     setStatus('📞 收到来电，接听中...', 'waiting');
     call = incomingCall;
     call.answer(localStream);
@@ -159,47 +166,45 @@ connectBtn.onclick = async () => {
       setStatus('❌ 通话协商失败（NAT限制），建议同一WiFi', 'error');
     });
   });
-  // Peer打开成功 = 这是A（第一个人），只等待，不主动呼叫自己
   peer.on('open', () => {
     setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
   });
-  // 错误处理
   peer.on('error', err => {
     console.error('Peer error:', err);
-    
-    // unavailable-id = 房间号已被占用，说明B是后进入的人，B主动呼叫A
     if (err.type === 'unavailable-id') {
       setStatus('📞 房间已存在，正在呼叫A...', 'waiting');
-      
-      // B用临时ID注册，然后呼叫A的房间号
       const tempPeer = new Peer({ config: ICE_CONFIG, debug: 0 });
       peer = tempPeer;
-      
       tempPeer.on('open', () => {
         call = tempPeer.call(roomId, localStream);
-        
+        // 呼叫超时12秒自动失败，防止一直卡着
+        callTimeout = setTimeout(()=>{
+          if(!isConnected){
+            setStatus('❌ 呼叫超时，穿透失败，优先同WiFi测试', 'error');
+            disconnectBtn.click();
+          }
+        },12000);
         call.on('stream', remoteStream => {
+          clearTimeout(callTimeout);
           playRemoteAudio(remoteStream);
           isConnected = true;
           setStatus('✅✅ 连接成功，可以说话！', 'connected');
           disconnectBtn.disabled = false;
         });
-        
         call.on('close', () => {
           setStatus('📵 对方挂断', 'waiting');
           disconnectBtn.click();
         });
-        
         call.on('error', e => {
+          clearTimeout(callTimeout);
           setStatus('❌ 呼叫失败：网络NAT不通，建议同一WiFi', 'error');
         });
       });
       tempPeer.on('error', e => {
         setStatus('❌ 信号错误：' + e.type, 'error');
       });
-      
     } else if (err.type === 'network' || err.type === 'server-unavailable') {
-      setStatus('❌ 信号服务器连不上，请检查网络', 'error');
+      setStatus('❌ 信号服务器连不上，请检查网络，优先同WiFi', 'error');
       connectBtn.disabled = false;
       roomInput.disabled = false;
       disconnectBtn.disabled = true;
