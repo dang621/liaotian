@@ -58,8 +58,8 @@ button:disabled{background:#c7c7cc;cursor:not-allowed}
   <div class="info">
     1. A先点【连接】，安静等待<br>
     2. B再点【连接】，B自动呼叫A<br>
-    3. 此程序为私人制作，请勿转载使用，党伟制作！！！
-    4. 如果被作者发现有人盗取，定追究法律责任！！！
+    3. 此程序为私人制作，请勿转载使用，[党伟]制作！！！<br>
+    4. 如果被作者发现有人盗取，定追究法律责任！！！<br>
   </div>
   <div class="row">
     <input id="roomInput" placeholder="输入房间号，如 8866">
@@ -79,13 +79,12 @@ const connectBtn = $('#connectBtn');
 const disconnectBtn = $('#disconnectBtn');
 const copyBtn = $('#copyBtn');
 const statusBox = $('#status');
-// 增加更多STUN服务器，提高穿透成功率
+
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.voipbuster.com' }
+    { urls: 'stun:stun2.l.google.com:19302' }
   ]
 };
 let peer, localStream, call, isConnected = false;
@@ -133,9 +132,9 @@ connectBtn.onclick = async () => {
   roomInput.disabled = true;
   setStatus('🎤 正在请求麦克风权限...', 'waiting');
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ 
+    localStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
-      video: false 
+      video: false
     });
   } catch(err) {
     setStatus('❌ 麦克风权限被拒绝，请在浏览器设置中允许', 'error');
@@ -145,27 +144,42 @@ connectBtn.onclick = async () => {
   }
   setStatus('🔗 正在连接信号服务器...', 'waiting');
   peer = new Peer(roomId, { config: ICE_CONFIG, debug: 0 });
-  // A：收到来电接听
+
   peer.on('call', incomingCall => {
     clearTimeout(callTimeout);
     setStatus('📞 收到来电，接听中...', 'waiting');
     call = incomingCall;
     call.answer(localStream);
-    
+
+    // 监听ICE真实连接状态（关键，识别假连接）
+    call.peerConnection.addEventListener('iceconnectionstatechange', ()=>{
+      const state = call.peerConnection.iceConnectionState;
+      console.log("ICE状态：", state);
+      if(state === "checking"){
+        setStatus("🔍 ICE通道探测中，等待P2P打通...", "waiting");
+      }
+      if(state === "connected" || state === "completed"){
+        setStatus("✅ ICE通道就绪，连接成功，可以说话！", "connected");
+      }
+      if(state === "disconnected" || state === "failed"){
+        setStatus("❌ ICE通道失败，P2P无法穿透，异地大概率无声音，即将断开", "error");
+        setTimeout(()=>disconnectBtn.click(),1500);
+      }
+    })
+
     call.on('stream', remoteStream => {
       playRemoteAudio(remoteStream);
       isConnected = true;
-      setStatus('✅✅ 连接成功，可以说话！', 'connected');
-      disconnectBtn.disabled = false;
     });
     call.on('close', () => {
       setStatus('📵 对方已挂断', 'waiting');
       disconnectBtn.click();
     });
     call.on('error', e => {
-      setStatus('❌ 通话协商失败（NAT限制），建议同一WiFi', 'error');
+      setStatus('❌ 通话协商失败（NAT限制），异地跨网需要TURN中继', 'error');
     });
   });
+
   peer.on('open', () => {
     setStatus('⏳ 已就绪，等待对方加入...', 'waiting');
   });
@@ -177,13 +191,31 @@ connectBtn.onclick = async () => {
       peer = tempPeer;
       tempPeer.on('open', () => {
         call = tempPeer.call(roomId, localStream);
-        // 呼叫超时12秒自动失败，防止一直卡着
         callTimeout = setTimeout(()=>{
           if(!isConnected){
-            setStatus('❌ 呼叫超时，穿透失败，优先同WiFi测试', 'error');
+            setStatus('❌ 呼叫超时，P2P穿透失败，异地需要TURN中继', 'error');
             disconnectBtn.click();
           }
-        },12000);
+        },18000);
+
+        call.peerConnection.addEventListener('iceconnectionstatechange', ()=>{
+          const state = call.peerConnection.iceConnectionState;
+          console.log("ICE状态：", state);
+          if(state === "checking"){
+            setStatus("🔍 ICE通道探测中，等待P2P打通...", "waiting");
+          }
+          if(state === "connected" || state === "completed"){
+            clearTimeout(callTimeout);
+            setStatus("✅ ICE通道就绪，连接成功，可以说话！", "connected");
+            isConnected = true;
+            disconnectBtn.disabled = false;
+          }
+          if(state === "disconnected" || state === "failed"){
+            setStatus("❌ ICE通道失败，P2P无法穿透，异地无声，即将断开", "error");
+            setTimeout(()=>disconnectBtn.click(),1500);
+          }
+        })
+
         call.on('stream', remoteStream => {
           clearTimeout(callTimeout);
           playRemoteAudio(remoteStream);
@@ -197,14 +229,14 @@ connectBtn.onclick = async () => {
         });
         call.on('error', e => {
           clearTimeout(callTimeout);
-          setStatus('❌ 呼叫失败：网络NAT不通，建议同一WiFi', 'error');
+          setStatus('❌ 呼叫失败：网络NAT不通，异地跨网需要TURN中继', 'error');
         });
       });
       tempPeer.on('error', e => {
         setStatus('❌ 信号错误：' + e.type, 'error');
       });
     } else if (err.type === 'network' || err.type === 'server-unavailable') {
-      setStatus('❌ 信号服务器连不上，请检查网络，优先同WiFi', 'error');
+      setStatus('❌ 信号服务器连不上，请检查网络', 'error');
       connectBtn.disabled = false;
       roomInput.disabled = false;
       disconnectBtn.disabled = true;
